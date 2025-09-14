@@ -38,6 +38,30 @@ The default date source is the YAML Key ("created") as mentioned above. If you w
 
 > Both YAML and File Name options can include additional characters in the file name. As long as the custom date format defined in the plugin settings is at the beginning of the YAML key or File Name, the plugin will be smart enough to parse only the beginning of the key/filename. For instance, if you have a file name '**2023-03-10 This is the file**' and your date format defined in the plugin settings is **YYYY-MM-DD**, it will be parsed just fine in the calendar.
 
+### 03 Hashtag Option as Date Source
+
+If you want to use hashtags in your notes as date source, you can use the **Hashtag** option:
+
+1. Go to the plugin settings
+2. Change Date Source from **YAML** to **Hashtag**
+3. Set the **Hashtag Pattern** (default: `#event/YYYY/MM/DD`) where YYYY, MM, DD are placeholders for year, month, day
+4. After these changes, use **Reload Plugin** option to activate the changes in the vault.
+
+**Example usage in your notes:**
+```markdown
+# My Daily Notes
+
+Today I have several events:
+
+- #event/2025/01/15 Team meeting
+- #event/2025/02/14 Valentine's Day
+- #event/2025/03/08 International Women's Day
+
+You can also use different hashtag patterns by changing the pattern in settings.
+```
+
+> The plugin will search through all your markdown files and find hashtags matching the specified pattern. Each hashtag will be displayed on the corresponding date in the calendar.
+
 ## Create File Option
 
 You can use the **Plus(+)** icon within the calendar view to add a new note with the default YAML key and date format.

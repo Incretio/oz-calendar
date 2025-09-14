@@ -4,7 +4,7 @@ import { FolderSuggest } from 'settings/suggestor';
 
 export type OpenFileBehaviourType = 'new-tab' | 'new-tab-group' | 'current-tab' | 'obsidian-default';
 export type SortingOption = 'name' | 'name-rev';
-export type DateSourceOption = 'filename' | 'yaml';
+export type DateSourceOption = 'filename' | 'yaml' | 'hashtag';
 export type NewNoteDateType = 'current-date' | 'active-date';
 export type CalendarType = 'US' | 'ISO 8601';
 export type OverflowBehaviour = 'scroll' | 'hide' | 'next-line';
@@ -15,6 +15,7 @@ export interface OZCalendarPluginSettings {
 	dateSource: DateSourceOption;
 	yamlKey: string;
 	dateFormat: string;
+	hashtagPattern: string;
 	defaultFolder: string;
 	defaultFileNamePrefix: string;
 	fixedCalendar: boolean;
@@ -34,6 +35,7 @@ export const DEFAULT_SETTINGS: OZCalendarPluginSettings = {
 	dateSource: 'yaml',
 	yamlKey: 'created',
 	dateFormat: 'YYYY-MM-DD hh:mm:ss',
+	hashtagPattern: '#event/YYYY/MM/DD',
 	defaultFolder: '/',
 	defaultFileNamePrefix: 'YYYY-MM-DD',
 	fixedCalendar: true,
@@ -171,26 +173,37 @@ export class OZCalendarPluginSettingsTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Date Source')
 			.setDesc(
-				`Select the date source to be used in each folder. It can be either YAML Key or File Name.
+				`Select the date source to be used in each folder. It can be YAML Key, File Name, or Hashtag.
                 Depending on what you provide within the date format, it will try to parse the date source.`
 			)
 			.addDropdown((dropdown) => {
 				dropdown
 					.addOption('filename', 'File Name')
 					.addOption('yaml', 'YAML Key')
+					.addOption('hashtag', 'Hashtag')
 					.setValue(this.plugin.settings.dateSource)
-					.onChange((newValue: DateSourceOption) => {
+					.onChange(async (newValue: DateSourceOption) => {
 						this.plugin.settings.dateSource = newValue;
 						this.plugin.saveSettings();
-						this.plugin.OZCALENDARDAYS_STATE = this.plugin.getNotesWithDates();
+						this.plugin.OZCALENDARDAYS_STATE = await this.plugin.getNotesWithDates();
 						this.plugin.calendarForceUpdate();
-						// If YAML selected, show the YAML key below, or hide if changed back to filename
+						// Show/hide relevant settings based on selection
 						let yamlKeySettingEl = document.querySelector('.oz-calendar-setting-yaml-key-value');
+						let hashtagPatternSettingEl = document.querySelector('.oz-calendar-setting-hashtag-pattern-value');
+						
 						if (yamlKeySettingEl) {
-							if (newValue === 'filename') {
-								yamlKeySettingEl.addClass('oz-calendar-custom-hidden');
-							} else {
+							if (newValue === 'yaml') {
 								yamlKeySettingEl.removeClass('oz-calendar-custom-hidden');
+							} else {
+								yamlKeySettingEl.addClass('oz-calendar-custom-hidden');
+							}
+						}
+						
+						if (hashtagPatternSettingEl) {
+							if (newValue === 'hashtag') {
+								hashtagPatternSettingEl.removeClass('oz-calendar-custom-hidden');
+							} else {
+								hashtagPatternSettingEl.addClass('oz-calendar-custom-hidden');
 							}
 						}
 					});
@@ -209,10 +222,23 @@ export class OZCalendarPluginSettingsTab extends PluginSettingTab {
 
 		if (this.plugin.settings.dateSource === 'filename') yamlKeySetting.setClass('oz-calendar-custom-hidden');
 
+		let hashtagPatternSetting = new Setting(containerEl)
+			.setClass('oz-calendar-setting-hashtag-pattern-value')
+			.setName('Hashtag Pattern')
+			.setDesc('Set the hashtag pattern to search for in notes. Use YYYY, MM, DD as placeholders for year, month, day')
+			.addText((text) => {
+				text.setValue(this.plugin.settings.hashtagPattern).onChange((newValue) => {
+					this.plugin.settings.hashtagPattern = newValue;
+					this.plugin.saveSettings();
+				});
+			});
+
+		if (this.plugin.settings.dateSource !== 'hashtag') hashtagPatternSetting.setClass('oz-calendar-custom-hidden');
+
 		new Setting(containerEl)
 			.setName('Date Format')
 			.setDesc(
-				`Set the Date format you are using within the YAML key or File Name provided above. 
+				`Set the Date format you are using within the YAML key, File Name, or Hashtag pattern provided above. 
                 If you are using File Name, make sure that you dont have any special characters since Obsidian doesnt
                 support special characters in the file name like colon. Reload the plugin using the following button
                 in case you change this value`

@@ -33,17 +33,17 @@ export default class OZCalendarPlugin extends Plugin {
 			return new OZCalendarView(leaf, this);
 		});
 
-		this.app.metadataCache.on('resolved', () => {
+		this.app.metadataCache.on('resolved', async () => {
 			// Run only during initial vault load, changes are handled separately
 			if (!this.initialScanCompleted) {
-				this.OZCALENDARDAYS_STATE = this.getNotesWithDates();
+				this.OZCALENDARDAYS_STATE = await this.getNotesWithDates();
 				this.initialScanCompleted = true;
 				this.calendarForceUpdate();
 			}
 		});
 
-		this.app.workspace.onLayoutReady(() => {
-			this.OZCALENDARDAYS_STATE = this.getNotesWithDates();
+		this.app.workspace.onLayoutReady(async () => {
+			this.OZCALENDARDAYS_STATE = await this.getNotesWithDates();
 			if (this.settings.openViewOnStart) {
 				this.openOZCalendarLeaf({ showAfterAttach: true });
 			}
@@ -194,6 +194,44 @@ export default class OZCalendarPlugin extends Plugin {
 	};
 
 	/**
+	 * Scans the file content for hashtag patterns and adds to the plugin state
+	 * @param file
+	 * @returns boolean (if any change happened, true)
+	 */
+	scanTFileHashtags = async (file: TFile): Promise<boolean> => {
+		let changeFlag = false;
+		try {
+			const content = await this.app.vault.read(file);
+			const hashtagPattern = this.settings.hashtagPattern;
+			
+			// Convert pattern to regex: #event/YYYY/MM/DD -> #event/(\d{4})/(\d{2})/(\d{2})
+			const regexPattern = hashtagPattern
+				.replace(/YYYY/g, '(\\d{4})')
+				.replace(/MM/g, '(\\d{2})')
+				.replace(/DD/g, '(\\d{2})');
+			
+			const regex = new RegExp(regexPattern, 'g');
+			const matches = content.match(regex);
+			
+			if (matches) {
+				for (const match of matches) {
+					// Extract date from hashtag: #event/2025/09/14 -> 2025-09-14
+					const dateMatch = match.match(/(\d{4})\/(\d{2})\/(\d{2})/);
+					if (dateMatch) {
+						const [, year, month, day] = dateMatch;
+						const dateString = `${year}-${month}-${day}`;
+						this.addFilePathToState(dateString, file);
+						changeFlag = true;
+					}
+				}
+			}
+		} catch (error) {
+			console.error(`Error reading file ${file.path}:`, error);
+		}
+		return changeFlag;
+	};
+
+	/**
 	 * Use this function to force update the calendar and file list view
 	 */
 	calendarForceUpdate = () => {
@@ -206,7 +244,7 @@ export default class OZCalendarPlugin extends Plugin {
 
 	/* ------------ HANDLE VAULT CHANGES - LISTENER FUNCTIONS ------------ */
 
-	handleCacheChange = (file: TFile, data: string, cache: CachedMetadata) => {
+	handleCacheChange = async (file: TFile, data: string, cache: CachedMetadata) => {
 		if (this.settings.dateSource === 'yaml') {
 			this.removeFilePathFromState(file.path);
 			if (cache && cache.frontmatter) {
@@ -230,10 +268,14 @@ export default class OZCalendarPlugin extends Plugin {
 			this.calendarForceUpdate();
 		} else if (this.settings.dateSource === 'filename') {
 			// No action needed
+		} else if (this.settings.dateSource === 'hashtag') {
+			this.removeFilePathFromState(file.path);
+			await this.scanTFileHashtags(file);
+			this.calendarForceUpdate();
 		}
 	};
 
-	handleRename = (file: TFile, oldPath: string) => {
+	handleRename = async (file: TFile, oldPath: string) => {
 		let changeFlag = false;
 		if (file instanceof TFile && file.extension === 'md') {
 			for (let k of Object.keys(this.OZCALENDARDAYS_STATE)) {
@@ -244,6 +286,11 @@ export default class OZCalendarPlugin extends Plugin {
 							ozItem.displayName = file.basename;
 							changeFlag = true;
 						} else if (this.settings.dateSource === 'filename') {
+							this.OZCALENDARDAYS_STATE[k] = this.OZCALENDARDAYS_STATE[k].filter((ozItem) => {
+								return !(ozItem.type === 'note' && ozItem.path === oldPath);
+							});
+							changeFlag = true;
+						} else if (this.settings.dateSource === 'hashtag') {
 							this.OZCALENDARDAYS_STATE[k] = this.OZCALENDARDAYS_STATE[k].filter((ozItem) => {
 								return !(ozItem.type === 'note' && ozItem.path === oldPath);
 							});
@@ -266,6 +313,10 @@ export default class OZCalendarPlugin extends Plugin {
 				this.OZCALENDARDAYS_STATE[parsedDayISOString] = [fileToOZItem({ note: file })];
 			}
 			changeFlag = true;
+		} else if (this.settings.dateSource === 'hashtag') {
+			// Scan the renamed file for hashtags
+			await this.scanTFileHashtags(file);
+			changeFlag = true;
 		}
 
 		// If change happened force update the component
@@ -277,20 +328,25 @@ export default class OZCalendarPlugin extends Plugin {
 		if (changeFlag) this.calendarForceUpdate();
 	};
 
-	handleCreate = (file: TAbstractFile) => {
-		if (file instanceof TFile && file.extension === 'md' && this.settings.dateSource === 'filename') {
-			if (dayjs(file.name, this.settings.dateFormat).isValid()) {
-				let parsedDayISOString = dayjs(file.name, this.settings.dateFormat).format('YYYY-MM-DD');
-				if (parsedDayISOString in this.OZCALENDARDAYS_STATE) {
-					this.OZCALENDARDAYS_STATE[parsedDayISOString] = [
-						...this.OZCALENDARDAYS_STATE[parsedDayISOString],
-						fileToOZItem({ note: file }),
-					];
-				} else {
-					this.OZCALENDARDAYS_STATE[parsedDayISOString] = [fileToOZItem({ note: file })];
+	handleCreate = async (file: TAbstractFile) => {
+		if (file instanceof TFile && file.extension === 'md') {
+			if (this.settings.dateSource === 'filename') {
+				if (dayjs(file.name, this.settings.dateFormat).isValid()) {
+					let parsedDayISOString = dayjs(file.name, this.settings.dateFormat).format('YYYY-MM-DD');
+					if (parsedDayISOString in this.OZCALENDARDAYS_STATE) {
+						this.OZCALENDARDAYS_STATE[parsedDayISOString] = [
+							...this.OZCALENDARDAYS_STATE[parsedDayISOString],
+							fileToOZItem({ note: file }),
+						];
+					} else {
+						this.OZCALENDARDAYS_STATE[parsedDayISOString] = [fileToOZItem({ note: file })];
+					}
 				}
+				this.calendarForceUpdate();
+			} else if (this.settings.dateSource === 'hashtag') {
+				await this.scanTFileHashtags(file);
+				this.calendarForceUpdate();
 			}
-			this.calendarForceUpdate();
 		}
 	};
 
@@ -317,13 +373,13 @@ export default class OZCalendarPlugin extends Plugin {
 		this.app.plugins.enablePlugin('oz-calendar');
 	};
 
-	getNotesWithDates = (): OZCalendarDaysMap => {
+	getNotesWithDates = async (): Promise<OZCalendarDaysMap> => {
 		let mdFiles = this.app.vault.getMarkdownFiles();
 		let OZCalendarDays: OZCalendarDaysMap = {};
 		for (let mdFile of mdFiles) {
 			if (this.settings.dateSource === 'yaml') {
 				// Get the file Cache
-				let fileCache = app.metadataCache.getFileCache(mdFile);
+				let fileCache = this.app.metadataCache.getFileCache(mdFile);
 				// Check if there is Frontmatter
 				if (fileCache && fileCache.frontmatter) {
 					let fm = fileCache.frontmatter;
@@ -361,6 +417,43 @@ export default class OZCalendarPlugin extends Plugin {
 							OZCalendarDays[parsedDayISOString] = [fileToOZItem({ note: mdFile })];
 						}
 					}
+				}
+			} else if (this.settings.dateSource === 'hashtag') {
+				// Scan file content for hashtag patterns
+				try {
+					const content = await this.app.vault.read(mdFile);
+					const hashtagPattern = this.settings.hashtagPattern;
+					
+					// Convert pattern to regex: #event/YYYY/MM/DD -> #event/(\d{4})/(\d{2})/(\d{2})
+					const regexPattern = hashtagPattern
+						.replace(/YYYY/g, '(\\d{4})')
+						.replace(/MM/g, '(\\d{2})')
+						.replace(/DD/g, '(\\d{2})');
+					
+					const regex = new RegExp(regexPattern, 'g');
+					const matches = content.match(regex);
+					
+					if (matches) {
+						for (const match of matches) {
+							// Extract date from hashtag: #event/2025/09/14 -> 2025-09-14
+							const dateMatch = match.match(/(\d{4})\/(\d{2})\/(\d{2})/);
+							if (dateMatch) {
+								const [, year, month, day] = dateMatch;
+								const dateString = `${year}-${month}-${day}`;
+								
+								if (dateString in OZCalendarDays) {
+									OZCalendarDays[dateString] = [
+										...OZCalendarDays[dateString],
+										fileToOZItem({ note: mdFile }),
+									];
+								} else {
+									OZCalendarDays[dateString] = [fileToOZItem({ note: mdFile })];
+								}
+							}
+						}
+					}
+				} catch (error) {
+					console.error(`Error reading file ${mdFile.path}:`, error);
 				}
 			}
 		}
