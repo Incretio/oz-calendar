@@ -45,7 +45,15 @@ export const hashtagToOZItem = (params: { note: TFile; hashtagText: string; hash
 	const textAfterHashtag = params.hashtagText.substring(hashtagIndex + params.hashtagMatch.length).trim();
 	// Remove leading dash and spaces if present (for markdown list items)
 	const cleanText = textAfterHashtag.replace(/^-\s*/, '').trim();
-	const displayName = cleanText || `[[${params.note.basename}]]`; // Fallback to file link if no text after hashtag
+	
+	let displayName;
+	if (cleanText) {
+		// Create a link to the hashtag within the file
+		displayName = `[[${params.note.basename}#${params.hashtagMatch}|${cleanText}]]`;
+	} else {
+		// Fallback to file link if no text after hashtag
+		displayName = `[[${params.note.basename}]]`;
+	}
 	
 	return {
 		type: 'note',
