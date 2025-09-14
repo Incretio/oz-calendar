@@ -406,9 +406,9 @@ export default class OZCalendarPlugin extends Plugin {
 
 	reloadPlugin = () => {
 		// @ts-ignore
-		this.app.plugins.disablePlugin('Incretio/oz-calendar');
+		this.app.plugins.disablePlugin('event-calendar');
 		// @ts-ignore
-		this.app.plugins.enablePlugin('Incretio/oz-calendar');
+		this.app.plugins.enablePlugin('event-calendar');
 	};
 
 	getNotesWithDates = async (): Promise<OZCalendarDaysMap> => {
