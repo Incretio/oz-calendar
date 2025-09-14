@@ -2,10 +2,11 @@ import { CachedMetadata, Menu, Plugin, TAbstractFile, TFile, addIcon } from 'obs
 import { OZCalendarView, VIEW_TYPE } from 'view';
 import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
-import { DayChangeCommandAction, OZCalendarDaysMap, fileToOZItem } from 'types';
+import { DayChangeCommandAction, OZCalendarDaysMap, fileToOZItem, hashtagToOZItem } from 'types';
 import { OZCAL_ICON } from './util/icons';
 import { OZCalendarPluginSettings, DEFAULT_SETTINGS, OZCalendarPluginSettingsTab } from './settings/settings';
 import { CreateNoteModal } from 'modal';
+import React from 'react';
 
 export default class OZCalendarPlugin extends Plugin {
 	settings: OZCalendarPluginSettings;
@@ -33,17 +34,17 @@ export default class OZCalendarPlugin extends Plugin {
 			return new OZCalendarView(leaf, this);
 		});
 
-		this.app.metadataCache.on('resolved', () => {
+		this.app.metadataCache.on('resolved', async () => {
 			// Run only during initial vault load, changes are handled separately
 			if (!this.initialScanCompleted) {
-				this.OZCALENDARDAYS_STATE = this.getNotesWithDates();
+				this.OZCALENDARDAYS_STATE = await this.getNotesWithDates();
 				this.initialScanCompleted = true;
 				this.calendarForceUpdate();
 			}
 		});
 
-		this.app.workspace.onLayoutReady(() => {
-			this.OZCALENDARDAYS_STATE = this.getNotesWithDates();
+		this.app.workspace.onLayoutReady(async () => {
+			this.OZCALENDARDAYS_STATE = await this.getNotesWithDates();
 			if (this.settings.openViewOnStart) {
 				this.openOZCalendarLeaf({ showAfterAttach: true });
 			}
@@ -118,7 +119,25 @@ export default class OZCalendarPlugin extends Plugin {
 				this.openOZCalendarLeaf({ showAfterAttach: true });
 			},
 		});
+
+		// Добавим обработчик код-блока для встраивания календаря
+		this.registerMarkdownCodeBlockProcessor('oz-calendar', (source, el, ctx) => {
+			this.renderEmbeddedCalendar(source, el, ctx);
+		});
 	}
+
+	// Добавим новый метод в класс OZCalendarPlugin:
+	private renderEmbeddedCalendar(source: string, el: HTMLElement, ctx: any) {
+		// Создаем контейнер для React компонента
+		const container = el.createDiv('oz-calendar-embedded-container');
+		
+		// Используем существующий компонент MyCalendar
+		import('./components/calendar').then(({ default: MyCalendar }) => {
+			const { createRoot } = require('react-dom/client');
+			const root = createRoot(container);
+			root.render(React.createElement(MyCalendar, { plugin: this }));
+	});
+}
 
 	onunload() {
 		// Remove Event Handler for Custom Note Creation
@@ -194,6 +213,63 @@ export default class OZCalendarPlugin extends Plugin {
 	};
 
 	/**
+	 * Scans the file content for hashtag patterns and adds to the plugin state
+	 * @param file
+	 */
+	scanTFileHashtags = async (file: TFile) => {
+		try {
+			const content = await this.app.vault.cachedRead(file);
+			const hashtagPattern = this.settings.hashtagPattern;
+			
+			// Convert pattern to regex: #event/YYYY/MM/DD -> #event/(\d{4})/(\d{2})/(\d{2})
+			const regexPattern = hashtagPattern
+				.replace(/YYYY/g, '(\\d{4})')
+				.replace(/MM/g, '(\\d{2})')
+				.replace(/DD/g, '(\\d{2})');
+			
+			const lines = content.split('\n');
+			
+			let currentPosition = 0;
+			for (let line of lines) {
+				let match;
+				const regex = new RegExp(regexPattern, 'g');
+				while ((match = regex.exec(line)) !== null) {
+					// Extract date from hashtag: #event/2025/09/14 -> 2025-09-14
+					const dateMatch = match[0].match(/(\d{4})\/(\d{2})\/(\d{2})/);
+					if (!dateMatch) {
+						continue;
+					}
+					const [, year, month, day] = dateMatch;
+					const dateString = `${year}-${month}-${day}`;
+					
+					let lineText = line.substring(match.index, line.length);
+
+					let newStateMap = this.OZCALENDARDAYS_STATE;
+					if (dateString in newStateMap) {
+						newStateMap[dateString] = [...newStateMap[dateString], hashtagToOZItem({ 
+							note: file, 
+							hashtagText: lineText, 
+							hashtagMatch: match[0],
+							hashtagPosition: currentPosition
+						})];
+					} else {
+						newStateMap[dateString] = [hashtagToOZItem({ 
+							note: file, 
+							hashtagText: lineText, 
+							hashtagMatch: match[0],
+							hashtagPosition: currentPosition
+						})];
+					}
+					this.OZCALENDARDAYS_STATE = newStateMap;
+				}
+				currentPosition++;
+			}
+		} catch (error) {
+			console.error(`Error reading file ${file.path}:`, error);
+		}
+	};
+
+	/**
 	 * Use this function to force update the calendar and file list view
 	 */
 	calendarForceUpdate = () => {
@@ -206,7 +282,7 @@ export default class OZCalendarPlugin extends Plugin {
 
 	/* ------------ HANDLE VAULT CHANGES - LISTENER FUNCTIONS ------------ */
 
-	handleCacheChange = (file: TFile, data: string, cache: CachedMetadata) => {
+	handleCacheChange = async (file: TFile, data: string, cache: CachedMetadata) => {
 		if (this.settings.dateSource === 'yaml') {
 			this.removeFilePathFromState(file.path);
 			if (cache && cache.frontmatter) {
@@ -230,10 +306,14 @@ export default class OZCalendarPlugin extends Plugin {
 			this.calendarForceUpdate();
 		} else if (this.settings.dateSource === 'filename') {
 			// No action needed
+		} else if (this.settings.dateSource === 'hashtag') {
+			this.removeFilePathFromState(file.path);
+			await this.scanTFileHashtags(file);
+			this.calendarForceUpdate();
 		}
 	};
 
-	handleRename = (file: TFile, oldPath: string) => {
+	handleRename = async (file: TFile, oldPath: string) => {
 		let changeFlag = false;
 		if (file instanceof TFile && file.extension === 'md') {
 			for (let k of Object.keys(this.OZCALENDARDAYS_STATE)) {
@@ -244,6 +324,11 @@ export default class OZCalendarPlugin extends Plugin {
 							ozItem.displayName = file.basename;
 							changeFlag = true;
 						} else if (this.settings.dateSource === 'filename') {
+							this.OZCALENDARDAYS_STATE[k] = this.OZCALENDARDAYS_STATE[k].filter((ozItem) => {
+								return !(ozItem.type === 'note' && ozItem.path === oldPath);
+							});
+							changeFlag = true;
+						} else if (this.settings.dateSource === 'hashtag') {
 							this.OZCALENDARDAYS_STATE[k] = this.OZCALENDARDAYS_STATE[k].filter((ozItem) => {
 								return !(ozItem.type === 'note' && ozItem.path === oldPath);
 							});
@@ -266,6 +351,10 @@ export default class OZCalendarPlugin extends Plugin {
 				this.OZCALENDARDAYS_STATE[parsedDayISOString] = [fileToOZItem({ note: file })];
 			}
 			changeFlag = true;
+		} else if (this.settings.dateSource === 'hashtag') {
+			// Scan the renamed file for hashtags
+			await this.scanTFileHashtags(file);
+			changeFlag = true;
 		}
 
 		// If change happened force update the component
@@ -277,20 +366,25 @@ export default class OZCalendarPlugin extends Plugin {
 		if (changeFlag) this.calendarForceUpdate();
 	};
 
-	handleCreate = (file: TAbstractFile) => {
-		if (file instanceof TFile && file.extension === 'md' && this.settings.dateSource === 'filename') {
-			if (dayjs(file.name, this.settings.dateFormat).isValid()) {
-				let parsedDayISOString = dayjs(file.name, this.settings.dateFormat).format('YYYY-MM-DD');
-				if (parsedDayISOString in this.OZCALENDARDAYS_STATE) {
-					this.OZCALENDARDAYS_STATE[parsedDayISOString] = [
-						...this.OZCALENDARDAYS_STATE[parsedDayISOString],
-						fileToOZItem({ note: file }),
-					];
-				} else {
-					this.OZCALENDARDAYS_STATE[parsedDayISOString] = [fileToOZItem({ note: file })];
+	handleCreate = async (file: TAbstractFile) => {
+		if (file instanceof TFile && file.extension === 'md') {
+			if (this.settings.dateSource === 'filename') {
+				if (dayjs(file.name, this.settings.dateFormat).isValid()) {
+					let parsedDayISOString = dayjs(file.name, this.settings.dateFormat).format('YYYY-MM-DD');
+					if (parsedDayISOString in this.OZCALENDARDAYS_STATE) {
+						this.OZCALENDARDAYS_STATE[parsedDayISOString] = [
+							...this.OZCALENDARDAYS_STATE[parsedDayISOString],
+							fileToOZItem({ note: file }),
+						];
+					} else {
+						this.OZCALENDARDAYS_STATE[parsedDayISOString] = [fileToOZItem({ note: file })];
+					}
 				}
+				this.calendarForceUpdate();
+			} else if (this.settings.dateSource === 'hashtag') {
+				await this.scanTFileHashtags(file);
+				this.calendarForceUpdate();
 			}
-			this.calendarForceUpdate();
 		}
 	};
 
@@ -312,18 +406,18 @@ export default class OZCalendarPlugin extends Plugin {
 
 	reloadPlugin = () => {
 		// @ts-ignore
-		this.app.plugins.disablePlugin('oz-calendar');
+		this.app.plugins.disablePlugin('Incretio/oz-calendar');
 		// @ts-ignore
-		this.app.plugins.enablePlugin('oz-calendar');
+		this.app.plugins.enablePlugin('Incretio/oz-calendar');
 	};
 
-	getNotesWithDates = (): OZCalendarDaysMap => {
+	getNotesWithDates = async (): Promise<OZCalendarDaysMap> => {
 		let mdFiles = this.app.vault.getMarkdownFiles();
 		let OZCalendarDays: OZCalendarDaysMap = {};
 		for (let mdFile of mdFiles) {
 			if (this.settings.dateSource === 'yaml') {
 				// Get the file Cache
-				let fileCache = app.metadataCache.getFileCache(mdFile);
+				let fileCache = this.app.metadataCache.getFileCache(mdFile);
 				// Check if there is Frontmatter
 				if (fileCache && fileCache.frontmatter) {
 					let fm = fileCache.frontmatter;
@@ -361,6 +455,58 @@ export default class OZCalendarPlugin extends Plugin {
 							OZCalendarDays[parsedDayISOString] = [fileToOZItem({ note: mdFile })];
 						}
 					}
+				}
+			} else if (this.settings.dateSource === 'hashtag') {
+				// Scan file content for hashtag patterns
+				try {
+					const content = await this.app.vault.cachedRead(mdFile);
+					const hashtagPattern = this.settings.hashtagPattern;
+					
+					// Convert pattern to regex: #event/YYYY/MM/DD -> #event/(\d{4})/(\d{2})/(\d{2})
+					const regexPattern = hashtagPattern
+						.replace(/YYYY/g, '(\\d{4})')
+						.replace(/MM/g, '(\\d{2})')
+						.replace(/DD/g, '(\\d{2})');
+					
+					const lines = content.split('\n');
+
+					let currentPosition = 0;
+					for (let line of lines) {
+						let match;
+						const regex = new RegExp(regexPattern, 'g');
+						while ((match = regex.exec(line)) !== null) {
+							const dateMatch = match[0].match(/(\d{4})\/(\d{2})\/(\d{2})/);
+							if (!dateMatch) {
+								continue;
+							}
+							const [, year, month, day] = dateMatch;
+							const dateString = `${year}-${month}-${day}`;
+							
+							let lineText = line.substring(match.index, line.length);
+							
+							if (dateString in OZCalendarDays) {
+								OZCalendarDays[dateString] = [
+									...OZCalendarDays[dateString],
+									hashtagToOZItem({ 
+										note: mdFile, 
+										hashtagText: lineText, 
+										hashtagMatch: match[0],
+										hashtagPosition: currentPosition
+									}),
+								];
+							} else {
+								OZCalendarDays[dateString] = [hashtagToOZItem({ 
+									note: mdFile, 
+									hashtagText: lineText, 
+									hashtagMatch: match[0],
+									hashtagPosition: currentPosition
+								})];
+							}
+						}
+						currentPosition++;
+					}
+				} catch (error) {
+					console.error(`Error reading file ${mdFile.path}:`, error);
 				}
 			}
 		}

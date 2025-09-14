@@ -37,8 +37,8 @@ export default function NoteListComponent(params: NoteListComponentParams) {
 		}
 	};
 
-	const openFilePath = (e: React.MouseEvent<HTMLDivElement, MouseEvent>, filePath: string) => {
-		let abstractFile = plugin.app.vault.getAbstractFileByPath(filePath);
+	const openFilePath = async (e: React.MouseEvent<HTMLDivElement, MouseEvent>, ozNote: OZNote) => {
+		let abstractFile = plugin.app.vault.getAbstractFileByPath(ozNote.path);
 		let openFileBehaviour = plugin.settings.openFileBehaviour;
 		if (abstractFile && abstractFile instanceof TFile) {
 			// Define the Default Open Behaviour by looking at the plugin settings
@@ -49,11 +49,12 @@ export default function NoteListComponent(params: NoteListComponentParams) {
 				openInNewTabGroup = (e.ctrlKey || e.metaKey) && (e.shiftKey || e.altKey);
 			}
 			// Open the file by using the open file behaviours above
-			openFile({
+			await openFile({
 				file: abstractFile,
 				plugin: plugin,
 				newLeaf: openInNewLeaf,
 				leafBySplit: openInNewTabGroup,
+				position: ozNote.hashtagPosition,
 			});
 		}
 	};
@@ -139,7 +140,7 @@ export default function NoteListComponent(params: NoteListComponentParams) {
 							}
 							id={ozNote.path}
 							key={ozNote.path}
-							onClick={(e) => openFilePath(e, ozNote.path)}
+							onClick={(e) => openFilePath(e, ozNote)}
 							onContextMenu={(e) => triggerFileContextMenu(e, ozNote.path)}>
 							<HiOutlineDocumentText className="oz-calendar-note-line-icon" />
 							<span>{ozNote.displayName}</span>
