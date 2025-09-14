@@ -2,7 +2,7 @@ import { CachedMetadata, Menu, Plugin, TAbstractFile, TFile, addIcon } from 'obs
 import { OZCalendarView, VIEW_TYPE } from 'view';
 import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
-import { DayChangeCommandAction, OZCalendarDaysMap, fileToOZItem } from 'types';
+import { DayChangeCommandAction, OZCalendarDaysMap, fileToOZItem, hashtagToOZItem } from 'types';
 import { OZCAL_ICON } from './util/icons';
 import { OZCalendarPluginSettings, DEFAULT_SETTINGS, OZCalendarPluginSettingsTab } from './settings/settings';
 import { CreateNoteModal } from 'modal';
@@ -431,23 +431,26 @@ export default class OZCalendarPlugin extends Plugin {
 						.replace(/DD/g, '(\\d{2})');
 					
 					const regex = new RegExp(regexPattern, 'g');
-					const matches = content.match(regex);
+					const lines = content.split('\n');
 					
-					if (matches) {
-						for (const match of matches) {
-							// Extract date from hashtag: #event/2025/09/14 -> 2025-09-14
-							const dateMatch = match.match(/(\d{4})\/(\d{2})\/(\d{2})/);
-							if (dateMatch) {
-								const [, year, month, day] = dateMatch;
-								const dateString = `${year}-${month}-${day}`;
-								
-								if (dateString in OZCalendarDays) {
-									OZCalendarDays[dateString] = [
-										...OZCalendarDays[dateString],
-										fileToOZItem({ note: mdFile }),
-									];
-								} else {
-									OZCalendarDays[dateString] = [fileToOZItem({ note: mdFile })];
+					for (const line of lines) {
+						const matches = line.match(regex);
+						if (matches) {
+							for (const match of matches) {
+								// Extract date from hashtag: #event/2025/09/14 -> 2025-09-14
+								const dateMatch = match.match(/(\d{4})\/(\d{2})\/(\d{2})/);
+								if (dateMatch) {
+									const [, year, month, day] = dateMatch;
+									const dateString = `${year}-${month}-${day}`;
+									
+									if (dateString in OZCalendarDays) {
+										OZCalendarDays[dateString] = [
+											...OZCalendarDays[dateString],
+											hashtagToOZItem({ note: mdFile, hashtagText: line, hashtagMatch: match }),
+										];
+									} else {
+										OZCalendarDays[dateString] = [hashtagToOZItem({ note: mdFile, hashtagText: line, hashtagMatch: match })];
+									}
 								}
 							}
 						}
